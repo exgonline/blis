@@ -88,7 +88,13 @@ async function fetchFromEpcApi(
         params,
         timeout: config.epc.timeoutMs,
       });
-      return response.data;
+      // The EPC API returns an empty body (not `{"rows":[]}`) when no results match.
+      // Axios returns this as an empty string; normalise it to a well-formed response.
+      const data = response.data;
+      if (!data || typeof data !== 'object' || !Array.isArray(data.rows)) {
+        return { rows: [], 'total-results': 0 };
+      }
+      return data;
     } catch (err) {
       const axiosErr = err as AxiosError;
       if (axiosErr.response?.status === 429) {
