@@ -26,12 +26,13 @@ const registerSiteSchema = z.object({
   buildingAgeOverride: z.nativeEnum(BuildingAge).optional(),
 });
 
-// GET /profile — list all registered sites
+// GET /profile — list all registered sites, optionally filtered by postcode
 router.get(
   '/',
-  async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const result = await buildingProfileService.listSites();
+      const postcode = typeof req.query['postcode'] === 'string' ? req.query['postcode'] : undefined;
+      const result = await buildingProfileService.listSites(postcode);
       res.json(result);
     } catch (err) {
       next(err);

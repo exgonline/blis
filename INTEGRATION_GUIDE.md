@@ -140,7 +140,18 @@ Returns service status and database connectivity.
 
 List all registered sites. Returns a flat summary of every site — useful for discovery, reconciliation, and building a UI index.
 
-**Request:** No parameters.
+**Query parameter:**
+
+| Parameter  | Type   | Required | Description                                                                 |
+|------------|--------|----------|-----------------------------------------------------------------------------|
+| `postcode` | string | No       | Filter to sites matching this postcode. Spaces and case are ignored — `SW1A2AA`, `sw1a 2aa`, and `SW1A 2AA` all match the same records. |
+
+**Examples:**
+```
+GET /v1/profile                     → all sites
+GET /v1/profile?postcode=SW1A+2AA   → sites at that postcode only
+GET /v1/profile?postcode=sw1a2aa    → same result
+```
 
 **Response 200:**
 

@@ -354,7 +354,7 @@ export class BuildingProfileService {
     }
   }
 
-  async listSites(): Promise<SiteListResponse> {
+  async listSites(postcode?: string): Promise<SiteListResponse> {
     const result = await pool.query<{
       site_id: string;
       site_name: string | null;
@@ -383,7 +383,9 @@ export class BuildingProfileService {
               epc_rating, epc_fetched_at,
               created_at, updated_at
          FROM building_profiles
+        ${postcode ? 'WHERE UPPER(REPLACE(postcode, \' \', \'\')) = UPPER(REPLACE($1, \' \', \'\'))' : ''}
         ORDER BY created_at ASC`,
+      postcode ? [postcode] : [],
     );
 
     const sites: SiteListItem[] = result.rows.map((row) => ({
