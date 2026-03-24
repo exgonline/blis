@@ -43,6 +43,19 @@ async function bootstrap(): Promise<void> {
   await loadCibseBenchmarks();
   await loadElexonProfiles();
 
+  // 3b. Auto-seed master API key from BLIS_MASTER_API_KEY env var (first boot only)
+  const masterKey = process.env['BLIS_MASTER_API_KEY'];
+  if (masterKey) {
+    const keyHash = crypto.createHash('sha256').update(masterKey).digest('hex');
+    await pool.query(
+      `INSERT INTO api_keys (key_hash, app_name, notes)
+       VALUES ($1, 'master', 'Auto-seeded from BLIS_MASTER_API_KEY')
+       ON CONFLICT (key_hash) DO NOTHING`,
+      [keyHash],
+    );
+    logger.info('Master API key seeded (BLIS_MASTER_API_KEY)');
+  }
+
   // 4. Create Express app
   const app = express();
 
