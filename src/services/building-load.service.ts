@@ -4,7 +4,16 @@ import { elexonService } from './elexon.service';
 import { cibseService } from './cibse.service';
 import { getSeason, getDayType, getHalfHourPeriod } from '../utils/season';
 import { getPhaseFactors, distributePhaseAmps } from '../utils/phase';
+import { ConfidenceLevel } from '../types/index';
 import type { BuildingLoadEstimate, BuildingProfileRow } from '../types/index';
+
+// Safety margin multipliers by confidence level.
+// The margin above 1.0 is stored as safetyMarginApplied (e.g. 1.15 → 0.15).
+const SAFETY_MARGINS: Record<string, number> = {
+  [ConfidenceLevel.Statistical]: 1.15,
+  [ConfidenceLevel.EpcDerived]: 1.15,
+  [ConfidenceLevel.ManualOverride]: 1.15,
+};
 
 // ─── Physical Constants ────────────────────────────────────────────────────────
 
@@ -67,16 +76,22 @@ export class BuildingLoadService {
     const effectiveBuildingType = profile.building_type_override ?? profile.building_type;
     const effectiveAge = profile.building_age_override ?? profile.building_age;
 
-    // Get CIBSE benchmark
-    const benchmark = await cibseService.getBenchmark(effectiveBuildingType);
-    const typicalKwhPerM2 = parseFloat(benchmark.typical_kwh);
+    // Annual kWh — prefer value cached in building_profiles (written by Stage 1 EPC pipeline).
+    // Fall back to inline calculation when the profile hasn't been through Stage 1 yet.
+    let annualKwhCentral: number;
+    let annualKwhP75: number;
+    if (profile.annual_kwh_central && profile.annual_kwh_p75) {
+      annualKwhCentral = parseFloat(profile.annual_kwh_central);
+      annualKwhP75 = parseFloat(profile.annual_kwh_p75);
+    } else {
+      const benchmark = await cibseService.getBenchmark(effectiveBuildingType);
+      const typicalKwhPerM2 = parseFloat(benchmark.typical_kwh);
+      const ageMultiplier = await cibseService.getAgeMultiplier(effectiveAge);
+      annualKwhCentral = floorAreaM2 * typicalKwhPerM2 * ageMultiplier;
+      annualKwhP75 = annualKwhCentral * P75_MULTIPLIER;
+    }
 
-    // Get age multiplier
-    const ageMultiplier = await cibseService.getAgeMultiplier(effectiveAge);
-
-    // Annual kWh calculation
-    const annualKwhCentral = floorAreaM2 * typicalKwhPerM2 * ageMultiplier;
-    const annualKwhP75 = annualKwhCentral * P75_MULTIPLIER;
+    const safetyMargin = SAFETY_MARGINS[profile.confidence_level] ?? 1.15;
 
     // Elexon profile
     const season = getSeason(targetDate);
@@ -127,6 +142,8 @@ export class BuildingLoadService {
       profileClass: profile.elexon_profile_class,
       confidenceLevel: profile.confidence_level,
       annualKwhP75: Math.round(annualKwhP75 * 100) / 100,
+      elexonCoefficient: coefficient,
+      safetyMarginApplied: safetyMargin - 1,
     };
 
     // Persist estimate
@@ -178,6 +195,8 @@ export class BuildingLoadService {
       profile_class: number;
       confidence_level: string;
       annual_kwh_p75: string;
+      elexon_coefficient: string | null;
+      safety_margin_applied: string | null;
     }>(
       `SELECT * FROM building_load_estimates
        WHERE site_id = $1
@@ -210,6 +229,8 @@ export class BuildingLoadService {
       profileClass: row.profile_class,
       confidenceLevel: row.confidence_level,
       annualKwhP75: parseFloat(row.annual_kwh_p75),
+      elexonCoefficient: row.elexon_coefficient ? parseFloat(row.elexon_coefficient) : 0,
+      safetyMarginApplied: row.safety_margin_applied ? parseFloat(row.safety_margin_applied) : 0.15,
     };
   }
 
@@ -221,9 +242,10 @@ export class BuildingLoadService {
            half_hour_period, season, day_type,
            central_kw, p75_kw, central_amps, p75_amps,
            l1_amps, l2_amps, l3_amps,
-           floor_area_m2, profile_class, confidence_level, annual_kwh_p75)
+           floor_area_m2, profile_class, confidence_level, annual_kwh_p75,
+           elexon_coefficient, safety_margin_applied)
          VALUES
-          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
          ON CONFLICT DO NOTHING`,
         [
           estimate.siteId,
@@ -244,6 +266,8 @@ export class BuildingLoadService {
           estimate.profileClass,
           estimate.confidenceLevel,
           estimate.annualKwhP75,
+          estimate.elexonCoefficient,
+          estimate.safetyMarginApplied,
         ],
       );
     } catch (err) {

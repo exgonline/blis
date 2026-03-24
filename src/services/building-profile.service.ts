@@ -10,6 +10,9 @@ import type {
   RegisterSiteRequest,
 } from '../types/index';
 import { fetchEpcForSite } from '../collectors/epc.collector';
+import { cibseService } from './cibse.service';
+
+const KWH_P75_MULTIPLIER = 1.15;
 
 function mapBuildingTypeToProfileClass(buildingType: string): number {
   switch (buildingType) {
@@ -196,11 +199,69 @@ export class BuildingProfileService {
     return profile;
   }
 
+  async calculateAndStoreKwh(siteId: string): Promise<void> {
+    const profileResult = await pool.query<BuildingProfileRow>(
+      'SELECT * FROM building_profiles WHERE site_id = $1',
+      [siteId],
+    );
+
+    if (profileResult.rows.length === 0) return;
+    const profile = profileResult.rows[0]!;
+
+    const floorAreaM2 = profile.floor_area_override
+      ? parseFloat(profile.floor_area_override)
+      : profile.floor_area_m2
+        ? parseFloat(profile.floor_area_m2)
+        : null;
+
+    if (floorAreaM2 === null) {
+      logger.warn(`Cannot calculate kWh for ${siteId} — no floor area available`, { siteId });
+      return;
+    }
+
+    const effectiveBuildingType = profile.building_type_override ?? profile.building_type;
+    const effectiveAge = profile.building_age_override ?? profile.building_age;
+
+    const benchmark = await cibseService.getBenchmark(effectiveBuildingType);
+    const typicalKwhPerM2 = parseFloat(benchmark.typical_kwh);
+    const goodPracticeKwhPerM2 = parseFloat(benchmark.good_practice_kwh);
+    const ageMultiplier = await cibseService.getAgeMultiplier(effectiveAge);
+
+    const annualKwhCentral = floorAreaM2 * typicalKwhPerM2 * ageMultiplier;
+    const annualKwhP75 = annualKwhCentral * KWH_P75_MULTIPLIER;
+    const annualKwhLow = floorAreaM2 * goodPracticeKwhPerM2 * ageMultiplier;
+    const annualKwhHigh = annualKwhCentral * 1.30;
+
+    await pool.query(
+      `UPDATE building_profiles SET
+         annual_kwh_central = $1,
+         annual_kwh_p75     = $2,
+         annual_kwh_low     = $3,
+         annual_kwh_high    = $4
+       WHERE site_id = $5`,
+      [
+        Math.round(annualKwhCentral * 100) / 100,
+        Math.round(annualKwhP75 * 100) / 100,
+        Math.round(annualKwhLow * 100) / 100,
+        Math.round(annualKwhHigh * 100) / 100,
+        siteId,
+      ],
+    );
+
+    logger.info(`Annual kWh calculated for ${siteId}`, {
+      siteId,
+      annualKwhCentral: Math.round(annualKwhCentral),
+      annualKwhP75: Math.round(annualKwhP75),
+    });
+  }
+
   async updateClassification(
     siteId: string,
     epcFloorArea: number | null,
     epcMainActivity: string | null,
     detectedBuildingType: BuildingType,
+    energyRating: string | null,
+    epcFetchedAt: Date,
   ): Promise<void> {
     // Check for manual overrides — they take precedence
     const profileResult = await pool.query<{
@@ -241,7 +302,9 @@ export class BuildingProfileService {
          phase_l2_factor = $7,
          phase_l3_factor = $8,
          phase_factor_source = $9,
-         confidence_level = $10
+         confidence_level = $10,
+         epc_rating = $12,
+         epc_fetched_at = $13
        WHERE site_id = $11`,
       [
         newBuildingType,
@@ -257,6 +320,8 @@ export class BuildingProfileService {
           : PhaseFactorSource.BuildingTypeDefault,
         confidenceLevel,
         siteId,
+        energyRating,
+        epcFetchedAt,
       ],
     );
 
@@ -277,13 +342,26 @@ export class BuildingProfileService {
         result.floorAreaM2,
         result.mainActivity,
         result.buildingType,
+        result.energyRating,
+        new Date(),
       );
+      await this.calculateAndStoreKwh(siteId);
+    } else if (result.status === 'not_found') {
+      logger.warn(`EPC not found for ${siteId} — calculating kWh from existing floor area`, { siteId });
+      await this.calculateAndStoreKwh(siteId);
     }
   }
 
   async getAllSiteIds(): Promise<string[]> {
     const result = await pool.query<{ site_id: string }>(
       'SELECT site_id FROM building_profiles ORDER BY created_at ASC',
+    );
+    return result.rows.map((r) => r.site_id);
+  }
+
+  async getCalculableSiteIds(): Promise<string[]> {
+    const result = await pool.query<{ site_id: string }>(
+      'SELECT site_id FROM building_profiles WHERE annual_kwh_p75 IS NOT NULL ORDER BY created_at ASC',
     );
     return result.rows.map((r) => r.site_id);
   }

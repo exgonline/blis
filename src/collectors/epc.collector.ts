@@ -70,6 +70,7 @@ interface EpcFetchResult {
   buildingType: BuildingType;
   floorAreaM2: number | null;
   mainActivity: string | null;
+  energyRating: string | null;
   errorMessage: string | null;
 }
 
@@ -184,6 +185,7 @@ export async function fetchEpcForSite(siteId: string): Promise<EpcFetchResult> {
       buildingType: BuildingType.Unknown,
       floorAreaM2: null,
       mainActivity: null,
+      energyRating: null,
       errorMessage: `Site ${siteId} not found`,
     };
   }
@@ -231,6 +233,7 @@ export async function fetchEpcForSite(siteId: string): Promise<EpcFetchResult> {
       buildingType: BuildingType.Unknown,
       floorAreaM2: null,
       mainActivity: null,
+      energyRating: null,
       errorMessage: 'Rate limited after retries',
     };
   }
@@ -243,6 +246,7 @@ export async function fetchEpcForSite(siteId: string): Promise<EpcFetchResult> {
       buildingType: BuildingType.Unknown,
       floorAreaM2: null,
       mainActivity: null,
+      energyRating: null,
       errorMessage: null,
     };
   }
@@ -258,6 +262,7 @@ export async function fetchEpcForSite(siteId: string): Promise<EpcFetchResult> {
     siteId,
     buildingType,
     floorAreaM2: parsed.floorAreaM2,
+    energyRating: parsed.energyRating,
   });
 
   return {
@@ -265,6 +270,7 @@ export async function fetchEpcForSite(siteId: string): Promise<EpcFetchResult> {
     buildingType,
     floorAreaM2: parsed.floorAreaM2,
     mainActivity: parsed.mainActivity,
+    energyRating: parsed.energyRating,
     errorMessage: null,
   };
 }

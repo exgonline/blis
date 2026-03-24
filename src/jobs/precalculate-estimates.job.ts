@@ -8,7 +8,7 @@ async function runPrecalculateEstimates(): Promise<void> {
   logger.info('Starting precalculate-estimates job', { job: 'precalculate-estimates' });
   const start = Date.now();
 
-  const siteIds = await buildingProfileService.getAllSiteIds();
+  const siteIds = await buildingProfileService.getCalculableSiteIds();
   logger.info(`Processing ${siteIds.length} sites`, { job: 'precalculate-estimates' });
 
   const batchSize = config.blis.batchSize;

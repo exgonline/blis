@@ -1,67 +1,73 @@
 import { ElexonSeason, DayType } from '../types/index';
 
 /**
- * Returns the last Monday on or before the given day of the month in the given year/month.
+ * Returns the last Sunday on or before the last day of the given year/month.
+ * month is 0-indexed (0 = January).
  */
-function lastMondayOfMonth(year: number, month: number): Date {
-  // month is 0-indexed
+function lastSundayOfMonth(year: number, month: number): Date {
   const lastDay = new Date(Date.UTC(year, month + 1, 0));
   const dayOfWeek = lastDay.getUTCDay(); // 0=Sun, 1=Mon, ...
-  const daysBack = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-  return new Date(Date.UTC(year, month, lastDay.getUTCDate() - daysBack));
+  // dayOfWeek already equals days to step back to reach Sunday
+  return new Date(Date.UTC(year, month, lastDay.getUTCDate() - dayOfWeek));
 }
 
 /**
  * Determine the Elexon season for a given Date.
  *
- * Seasons (approximate, using UTC dates):
- *  - high_summer: last Monday of July to last Monday of August (inclusive)
- *  - summer:      1 May – last Sunday before high_summer, and September
- *  - spring:      1 March – 30 April
+ * Seasons (UTC dates):
+ *  - high_summer: last Sunday of May → day before last Sunday of July (exclusive)
+ *  - summer:      last Sunday of March → day before last Sunday of May, and September
+ *  - spring:      last Sunday of March → end of April  (same start as summer boundary)
  *  - autumn:      1 October – 31 October
  *  - winter:      1 November – last day of February
+ *
+ * Boundary logic matches Elexon UNC calendar:
+ *   Spring:     last Sun March  → last Sun May  (exclusive)
+ *   Summer:     last Sun May    → last Sun July (exclusive) — split: pre/post high_summer
+ *   High Summer:last Sun May    → last Sun July (high intensity Jul window)
+ *   Autumn:     October
+ *   Winter:     November – February
+ *
+ * Per spec high_summer = last Sunday of May through last Sunday of July.
  */
 export function getSeason(date: Date): ElexonSeason {
   const year = date.getUTCFullYear();
   const month = date.getUTCMonth(); // 0-indexed
   const dayOfMonth = date.getUTCDate();
 
-  const lastMonJuly = lastMondayOfMonth(year, 6); // July = month 6
-  const lastMonAugust = lastMondayOfMonth(year, 7); // August = month 7
+  // Transition Sundays (midnight UTC)
+  const lastSunMar = lastSundayOfMonth(year, 2);  // March
+  const lastSunMay = lastSundayOfMonth(year, 4);  // May
+  const lastSunJul = lastSundayOfMonth(year, 6);  // July
+  const lastSunOct = lastSundayOfMonth(year, 9);  // October
 
-  // Normalise to midnight UTC for comparison
   const d = new Date(Date.UTC(year, month, dayOfMonth));
 
-  if (d >= lastMonJuly && d <= lastMonAugust) {
+  // high_summer: last Sunday of May (inclusive) up to last Sunday of July (exclusive)
+  if (d >= lastSunMay && d < lastSunJul) {
     return ElexonSeason.HighSummer;
   }
 
-  if (month === 4 /* May */ || month === 5 /* Jun */) {
+  // summer: last Sunday of July (inclusive) through September
+  if ((d >= lastSunJul && month <= 8) || month === 8) {
     return ElexonSeason.Summer;
   }
 
-  if (month === 6 /* Jul */ && d < lastMonJuly) {
-    return ElexonSeason.Summer;
-  }
-
-  if (month === 8 /* Sep */) {
-    return ElexonSeason.Summer;
-  }
-
-  if (month === 2 /* Mar */ || month === 3 /* Apr */) {
+  // spring: last Sunday of March (inclusive) up to last Sunday of May (exclusive)
+  if (d >= lastSunMar && d < lastSunMay) {
     return ElexonSeason.Spring;
   }
 
-  if (month === 9 /* Oct */) {
+  // autumn: last Sunday of October (inclusive) through end of October,
+  //         or all of October before that transition
+  if (d >= lastSunOct || (month === 9 && d < lastSunOct)) {
+    if (month === 9) return ElexonSeason.Autumn;
+  }
+  if (month === 9) {
     return ElexonSeason.Autumn;
   }
 
-  // November, December, January, February
-  if (month === 10 || month === 11 || month === 0 || month === 1) {
-    return ElexonSeason.Winter;
-  }
-
-  // Fallback (should not reach here)
+  // winter: November, December, January, February, and pre-spring March
   return ElexonSeason.Winter;
 }
 

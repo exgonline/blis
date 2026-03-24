@@ -95,6 +95,13 @@ export interface BuildingProfileRow {
   phase_l3_factor: string;
   phase_factor_source: string;
   confidence_level: string;
+  // Stage 1 kWh outputs — populated after EPC fetch
+  annual_kwh_central: string | null;
+  annual_kwh_p75: string | null;
+  annual_kwh_low: string | null;
+  annual_kwh_high: string | null;
+  epc_rating: string | null;
+  epc_fetched_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -168,6 +175,8 @@ export interface BuildingLoadEstimateRow {
   profile_class: number;
   confidence_level: string;
   annual_kwh_p75: string;
+  elexon_coefficient: string | null;
+  safety_margin_applied: string | null;
 }
 
 // ─── Request / Response Types ──────────────────────────────────────────────────
@@ -244,6 +253,8 @@ export interface BuildingLoadEstimate {
   profileClass: number;
   confidenceLevel: string;
   annualKwhP75: number;
+  elexonCoefficient: number;
+  safetyMarginApplied: number;
 }
 
 export interface PhaseFactors {
