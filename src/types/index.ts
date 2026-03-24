@@ -314,6 +314,60 @@ export interface EpcApiRow {
   'asset-rating-band'?: string;
   'asset-rating'?: string;
   'lodgement-date'?: string;
+  // Address fields returned by the EPC search API
+  address1?: string;
+  address2?: string;
+  address3?: string;
+  postcode?: string;
+}
+
+export interface EpcSearchResultItem {
+  buildingReference: string;
+  uprn: string | null;
+  address: string;
+  postcode: string | null;
+  floorAreaM2: number | null;
+  propertyType: string | null;
+  mainActivity: string | null;
+  suggestedBuildingType: string;
+  energyRating: string | null;
+  assetRating: number | null;
+  lodgementDate: string | null;
+}
+
+export interface EpcSearchResponse {
+  postcode: string;
+  count: number;
+  results: EpcSearchResultItem[];
+}
+
+export interface RegisterFromEpcRequest {
+  siteId: string;
+  buildingReference: string;
+  siteName?: string;
+  buildingAgeOverride?: string;
+}
+
+export interface EpcRegistrationResult {
+  siteId: string;
+  registeredAt: string;
+  buildingReference: string;
+  address: string;
+  postcode: string;
+  buildingType: string;
+  floorAreaM2: number | null;
+  energyRating: string | null;
+  annualKwh: {
+    central: number;
+    p75: number;
+    low: number;
+    high: number;
+  } | null;
+  benchmark: {
+    typicalKwhPerM2: number;
+    goodPracticeKwhPerM2: number;
+    ageMultiplier: number;
+  } | null;
 }
 
 export interface EpcApiResponse {

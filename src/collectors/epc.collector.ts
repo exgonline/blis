@@ -275,4 +275,40 @@ export async function fetchEpcForSite(siteId: string): Promise<EpcFetchResult> {
   };
 }
 
+/**
+ * Search the EPC Non-domestic API by postcode.
+ * Returns all certificate rows found, or an empty array if none / rate-limited.
+ */
+export async function searchEpcByPostcode(postcode: string): Promise<EpcApiRow[]> {
+  await sleep(config.epc.requestDelayMs);
+  try {
+    const response = await fetchFromEpcApi({ postcode });
+    return response ? response.rows : [];
+  } catch (err) {
+    logger.warn('EPC postcode search failed', {
+      postcode,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
+/**
+ * Fetch a single EPC certificate by building reference number.
+ * Returns the first matching row, or null if not found / rate-limited.
+ */
+export async function fetchEpcByBuildingReference(buildingReference: string): Promise<EpcApiRow | null> {
+  await sleep(config.epc.requestDelayMs);
+  try {
+    const response = await fetchFromEpcApi({ 'building-reference-number': buildingReference });
+    return response && response.rows.length > 0 ? response.rows[0]! : null;
+  } catch (err) {
+    logger.warn('EPC building reference lookup failed', {
+      buildingReference,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 export { mapMainActivityToBuildingType };

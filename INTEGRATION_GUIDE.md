@@ -800,6 +800,188 @@ Get all CIBSE TM46 benchmarks.
 
 ---
 
+### GET /v1/epc/search
+
+Search the EPC Non-domestic register by postcode. Returns all certificates found at that postcode — use this to let a user pick their building before registering it.
+
+**Query parameter:**
+
+| Parameter  | Type   | Required | Description             |
+|------------|--------|----------|-------------------------|
+| `postcode` | string | Yes      | Valid UK postcode        |
+
+**Response 200:**
+
+```json
+{
+  "postcode": "SW1A 2AA",
+  "count": 2,
+  "results": [
+    {
+      "buildingReference": "10000012345",
+      "uprn": "100023336956",
+      "address": "1 Station Road, London",
+      "postcode": "SW1A 2AA",
+      "floorAreaM2": 3420,
+      "propertyType": "Hotel",
+      "mainActivity": "Hotel",
+      "suggestedBuildingType": "hotel",
+      "energyRating": "C",
+      "assetRating": 68,
+      "lodgementDate": "2021-06-15"
+    },
+    {
+      "buildingReference": "10000012346",
+      "uprn": null,
+      "address": "2 Station Road, London",
+      "postcode": "SW1A 2AA",
+      "floorAreaM2": 850,
+      "propertyType": "Office",
+      "mainActivity": "Office",
+      "suggestedBuildingType": "office_general",
+      "energyRating": "B",
+      "assetRating": 42,
+      "lodgementDate": "2022-03-01"
+    }
+  ]
+}
+```
+
+**Field reference:**
+
+| Field                  | Description                                                                   |
+|------------------------|-------------------------------------------------------------------------------|
+| `buildingReference`    | EPC building reference number — pass this to `POST /v1/epc/register`         |
+| `uprn`                 | Unique Property Reference Number, or `null`                                   |
+| `address`              | Full address from the EPC register                                            |
+| `postcode`             | Postcode as recorded on the certificate                                       |
+| `floorAreaM2`          | Gross internal floor area from the EPC                                        |
+| `propertyType`         | Property type as recorded on the certificate                                  |
+| `mainActivity`         | Main activity as recorded on the certificate                                  |
+| `suggestedBuildingType`| BLIS building type inferred from `mainActivity` (may be `unknown`)            |
+| `energyRating`         | EPC band A–G                                                                  |
+| `assetRating`          | Numeric EPC asset rating                                                      |
+| `lodgementDate`        | Date the certificate was lodged                                               |
+
+**Response 400 — missing or invalid postcode:**
+
+```json
+{
+  "error": "VALIDATION_ERROR",
+  "message": "Invalid UK postcode format",
+  "statusCode": 400,
+  "timestamp": "2026-03-24T12:00:00.000Z"
+}
+```
+
+If the EPC register has no certificates at the postcode, `count` will be `0` and `results` will be an empty array — this is not an error.
+
+---
+
+### POST /v1/epc/register
+
+Register a site directly from an EPC certificate. The user picks a `buildingReference` from the search results above, provides their own `siteId`, and BLIS:
+
+1. Fetches the full EPC certificate by building reference
+2. Detects building type from the certificate's `mainActivity` field
+3. Registers the site in BLIS
+4. Calculates annual kWh benchmarks (central, P75, low, high)
+5. Returns the kWh data for the caller to store locally
+
+**Request body (JSON):**
+
+| Field                 | Type   | Required | Constraints                                                     |
+|-----------------------|--------|----------|-----------------------------------------------------------------|
+| `siteId`              | string | Yes      | 1–100 chars, alphanumeric / underscores / hyphens only          |
+| `buildingReference`   | string | Yes      | Building reference from `GET /v1/epc/search` results            |
+| `siteName`            | string | No       | Up to 255 chars                                                 |
+| `buildingAgeOverride` | string | No       | Age band enum value — improves kWh accuracy if known            |
+
+**Example request:**
+
+```json
+{
+  "siteId": "site-hotel-001",
+  "buildingReference": "10000012345",
+  "siteName": "The Grand Hotel",
+  "buildingAgeOverride": "1990_2005"
+}
+```
+
+**Response 201 — registered:**
+
+```json
+{
+  "siteId": "site-hotel-001",
+  "registeredAt": "2026-03-24T12:00:00.000Z",
+  "buildingReference": "10000012345",
+  "address": "1 Station Road, London",
+  "postcode": "SW1A 2AA",
+  "buildingType": "hotel",
+  "floorAreaM2": 3420,
+  "energyRating": "C",
+  "annualKwh": {
+    "central": 957600.00,
+    "p75": 1101240.00,
+    "low": 667800.00,
+    "high": 1244880.00
+  },
+  "benchmark": {
+    "typicalKwhPerM2": 280,
+    "goodPracticeKwhPerM2": 195,
+    "ageMultiplier": 1.0
+  }
+}
+```
+
+**`annualKwh` field reference:**
+
+| Field     | Description                                                                         |
+|-----------|-------------------------------------------------------------------------------------|
+| `central` | `floorAreaM2 × typicalKwhPerM2 × ageMultiplier`                                     |
+| `p75`     | `central × 1.15` — 75th percentile, used as the basis for load estimates            |
+| `low`     | `floorAreaM2 × goodPracticeKwhPerM2 × ageMultiplier` — best-practice lower bound    |
+| `high`    | `central × 1.30` — conservative upper bound                                         |
+
+`annualKwh` and `benchmark` will be `null` if the EPC certificate has no floor area recorded.
+
+Once registered, the site is immediately available via `GET /v1/estimate/:siteId`.
+
+**Response 400 — validation error:**
+
+```json
+{
+  "error": "VALIDATION_ERROR",
+  "message": "Validation failed: siteId: String must contain at least 1 character(s)",
+  "statusCode": 400,
+  "timestamp": "2026-03-24T12:00:00.000Z"
+}
+```
+
+**Response 404 — building reference not found in EPC register:**
+
+```json
+{
+  "error": "NOT_FOUND",
+  "message": "No EPC certificate found for building reference 10000012345",
+  "statusCode": 404,
+  "timestamp": "2026-03-24T12:00:00.000Z"
+}
+```
+
+**Response 409 — siteId already registered:**
+
+```json
+{
+  "error": "CONFLICT",
+  "message": "Site site-hotel-001 already exists",
+  "statusCode": 409,
+  "timestamp": "2026-03-24T12:00:00.000Z"
+}
+```
+
+---
+
 ## Request Headers Summary
 
 | Header            | Required          | Value                        |

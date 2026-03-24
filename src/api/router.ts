@@ -5,6 +5,7 @@ import profileRouter from './routes/profile.routes';
 import estimateRouter from './routes/estimate.routes';
 import elexonRouter from './routes/elexon.routes';
 import cibseRouter from './routes/cibse.routes';
+import epcDiscoveryRouter from './routes/epc-discovery.routes';
 
 const router = Router();
 
@@ -16,5 +17,6 @@ router.use('/profile', authMiddleware, profileRouter);
 router.use('/estimate', authMiddleware, estimateRouter);
 router.use('/elexon', authMiddleware, elexonRouter);
 router.use('/cibse', authMiddleware, cibseRouter);
+router.use('/epc', authMiddleware, epcDiscoveryRouter);
 
 export default router;
