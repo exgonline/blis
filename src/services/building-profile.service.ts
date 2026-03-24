@@ -8,6 +8,8 @@ import type {
   BuildingProfileResponse,
   EpcRecordResponse,
   RegisterSiteRequest,
+  SiteListItem,
+  SiteListResponse,
 } from '../types/index';
 import { fetchEpcForSite } from '../collectors/epc.collector';
 import { cibseService } from './cibse.service';
@@ -350,6 +352,63 @@ export class BuildingProfileService {
       logger.warn(`EPC not found for ${siteId} — calculating kWh from existing floor area`, { siteId });
       await this.calculateAndStoreKwh(siteId);
     }
+  }
+
+  async listSites(): Promise<SiteListResponse> {
+    const result = await pool.query<{
+      site_id: string;
+      site_name: string | null;
+      address: string | null;
+      postcode: string | null;
+      uprn: string | null;
+      building_type: string;
+      building_type_override: string | null;
+      building_age: string;
+      building_age_override: string | null;
+      floor_area_m2: string | null;
+      floor_area_override: string | null;
+      confidence_level: string;
+      classified_by: string;
+      classified_at: Date | null;
+      epc_rating: string | null;
+      epc_fetched_at: Date | null;
+      created_at: Date;
+      updated_at: Date;
+    }>(
+      `SELECT site_id, site_name, address, postcode, uprn,
+              building_type, building_type_override,
+              building_age, building_age_override,
+              floor_area_m2, floor_area_override,
+              confidence_level, classified_by, classified_at,
+              epc_rating, epc_fetched_at,
+              created_at, updated_at
+         FROM building_profiles
+        ORDER BY created_at ASC`,
+    );
+
+    const sites: SiteListItem[] = result.rows.map((row) => ({
+      siteId: row.site_id,
+      siteName: row.site_name,
+      address: row.address,
+      postcode: row.postcode,
+      uprn: row.uprn,
+      buildingType: row.building_type_override ?? row.building_type,
+      buildingAge: row.building_age_override ?? row.building_age,
+      floorAreaM2: row.floor_area_override
+        ? parseFloat(row.floor_area_override)
+        : row.floor_area_m2
+          ? parseFloat(row.floor_area_m2)
+          : null,
+      confidenceLevel: row.confidence_level,
+      classifiedBy: row.classified_by,
+      classifiedAt: row.classified_at,
+      epcRating: row.epc_rating,
+      epcFetchedAt: row.epc_fetched_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+
+    return { count: sites.length, sites };
   }
 
   async getAllSiteIds(): Promise<string[]> {

@@ -26,6 +26,19 @@ const registerSiteSchema = z.object({
   buildingAgeOverride: z.nativeEnum(BuildingAge).optional(),
 });
 
+// GET /profile — list all registered sites
+router.get(
+  '/',
+  async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const result = await buildingProfileService.listSites();
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // POST /profile — register a new site
 router.post(
   '/',

@@ -257,6 +257,29 @@ export interface BuildingLoadEstimate {
   safetyMarginApplied: number;
 }
 
+export interface SiteListItem {
+  siteId: string;
+  siteName: string | null;
+  address: string | null;
+  postcode: string | null;
+  uprn: string | null;
+  buildingType: string;
+  buildingAge: string;
+  floorAreaM2: number | null;
+  confidenceLevel: string;
+  classifiedBy: string;
+  classifiedAt: Date | null;
+  epcRating: string | null;
+  epcFetchedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SiteListResponse {
+  count: number;
+  sites: SiteListItem[];
+}
+
 export interface PhaseFactors {
   l1: number;
   l2: number;
