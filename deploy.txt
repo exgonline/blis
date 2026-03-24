@@ -1,0 +1,114 @@
+BLIS — Render Deployment Guide
+Prerequisites:
+
+Before starting, ensure you have the following ready: a Render account (render.com), your repository pushed to GitHub or GitLab, your EPC API credentials (email and key from epc.opendatacommunities.org), and your BLIS master API key (generate one with node -e "console.log(require('crypto').randomBytes(32).toString('hex'))").
+
+Step 1 — Create the PostgreSQL Database
+
+In the Render dashboard, navigate to New → PostgreSQL and configure as follows:
+
+Name: blis-db
+Region: Frankfurt (EU Central)
+Plan: Starter ($7/month)
+PostgreSQL Version: 15
+Click Create Database and wait for it to become available. Copy the Internal Database URL — you will need it shortly. Do not use the external URL for the app service; the internal URL uses Render's private network and avoids egress costs.
+
+Step 2 — Create the Web Service
+
+Navigate to New → Web Service and connect your repository. Configure as follows:
+
+Name: blis
+Region: Frankfurt (EU Central) — must match the database region
+Branch: main
+Runtime: Node
+Plan: Starter ($7/month)
+Build Command:
+Copynpm install && npm run build && npm run migrate
+Start Command:
+Copynpm start
+Health Check Path: /v1/health
+Auto-Deploy: Yes
+Step 3 — Configure Environment Variables
+
+In the web service settings, navigate to Environment → Environment Variables and add the following. Variables marked 🔒 must be set manually and are never committed to source control.
+
+Key	Value	Notes
+NODE_ENV	production	
+PORT	10000	Render injects this automatically
+API_VERSION	v1	
+LOG_LEVEL	info	
+PGSSL	true	Required for Render PostgreSQL
+BLIS_BATCH_SIZE	20	Sites processed per cron batch
+BLIS_EPC_REQUEST_DELAY_MS	200	Rate-limit delay between EPC API calls
+BLIS_EPC_TIMEOUT_MS	10000	EPC API request timeout
+BLIS_DB_POOL_MIN	2	
+BLIS_DB_POOL_MAX	10	
+BLIS_DB_RETRY_COUNT	3	
+EPC_API_EMAIL	your-email@domain.com	🔒 Set in dashboard
+EPC_API_KEY	your-epc-api-key	🔒 Set in dashboard
+BLIS_MASTER_API_KEY	your-generated-key	🔒 Set in dashboard
+Step 4 — Link the Database
+
+Still in the web service Environment tab, scroll to Environment Variables and click Add from Database. Select blis-db. Render will automatically inject DATABASE_URL as the internal connection string. This is the preferred method — do not manually paste the database URL.
+
+Step 5 — Deploy
+
+Click Save Changes, then Manual Deploy → Deploy latest commit. Monitor the build log for the following sequence:
+
+==> Running build command: npm install && npm run build && npm run migrate
+==> Build successful
+==> Running start command: npm start
+==> Your service is live
+Migration output should confirm all tables were created without error. If migrations fail, the build will abort before the service starts — check logs for SQL errors.
+
+Step 6 — Verify the Deployment
+
+Once live, test the health endpoint:
+
+Copycurl https://blis.onrender.com/v1/health
+Expected response:
+
+Copy{
+  "status": "ok",
+  "version": "v1",
+  "database": "connected",
+  "timestamp": "2026-03-24T10:00:00.000Z"
+}
+If "database": "connected" is missing or returns an error, check that DATABASE_URL and PGSSL=true are set correctly, and that the database region matches the service region.
+
+Step 7 — Generate and Register an API Key
+
+After deployment, run the key-generation script to create your first consuming-app API key:
+
+Copy# Via Render Shell (Dashboard → Shell tab)
+npm run generate-key -- --app "edgecore-dlb" --notes "Cloud DLB service"
+Store the returned key securely — it is hashed in the database and cannot be retrieved after generation.
+
+Cron Jobs
+
+BLIS uses node-cron running inside the web process — no Render Cron Job service is required. Both scheduled jobs start automatically on service boot:
+
+Job	Schedule	Purpose
+Update Building Loads	Every 30 minutes	Calculates and stores load estimates for all active sites
+Refresh EPC Data	Sundays at 02:00 UTC	Re-fetches EPC records older than 90 days
+Confirm jobs are running by checking logs approximately 30 minutes after first deploy. Look for log entries with "job": "update-building-loads".
+
+Custom Domain (Optional)
+
+In the web service settings, navigate to Settings → Custom Domains and add your domain (e.g., blis.yourdomain.com). Render provisions a Let's Encrypt SSL certificate automatically. Update your DNS with the CNAME value provided.
+
+Scaling
+
+The Starter plan (0.5 CPU, 512 MB RAM) is sufficient for up to approximately 500 active sites with 30-minute cron cycles. If processing time per cron run exceeds 25 minutes, upgrade to the Standard plan (1 CPU, 2 GB RAM, $25/month) and increase BLIS_BATCH_SIZE to 50.
+
+Troubleshooting
+
+Build fails at npm run migrate: Confirm DATABASE_URL is linked and PGSSL=true is set before the first deploy.
+Health check returns 503: The service has started but the database connection is failing. Check the internal URL is being used, not the external one.
+EPC API returns 401: Verify EPC_API_EMAIL and EPC_API_KEY match your registered account at epc.opendatacommunities.org exactly.
+Cron jobs not running: The web service must remain on a paid plan — the free tier suspends after inactivity and will not fire cron jobs reliably.
+Monthly Cost Summary
+
+Total=$7 (Web Service)+$7 (PostgreSQL)=$14/month
+
+All traffic between the BLIS service and the database travels over Render's private network at no additional cost.
