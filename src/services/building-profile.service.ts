@@ -13,6 +13,8 @@ import type {
 } from '../types/index';
 import { fetchEpcForSite } from '../collectors/epc.collector';
 import { cibseService } from './cibse.service';
+import { runDataQualityCheck } from './data-quality.service';
+import { invalidateSeasonalCache } from './seasonal-profile.service';
 
 const KWH_P75_MULTIPLIER = 1.15;
 
@@ -64,6 +66,16 @@ function rowToProfileResponse(
     phaseL3Factor: parseFloat(row.phase_l3_factor),
     phaseFactorSource: row.phase_factor_source,
     confidenceLevel: row.confidence_level,
+    annualKwhCentral: row.annual_kwh_central ? parseFloat(row.annual_kwh_central) : null,
+    annualKwhP75: row.annual_kwh_p75 ? parseFloat(row.annual_kwh_p75) : null,
+    annualKwhLow: row.annual_kwh_low ? parseFloat(row.annual_kwh_low) : null,
+    annualKwhHigh: row.annual_kwh_high ? parseFloat(row.annual_kwh_high) : null,
+    floorAreaConfidence: row.floor_area_confidence ?? 'EPC_DERIVED',
+    dataQualityFlag: row.data_quality_flag ?? null,
+    dataQualityNote: row.data_quality_note ?? null,
+    floorAreaOverrideSource: row.floor_area_override_source ?? null,
+    floorAreaOverrideAt: row.floor_area_override_at ?? null,
+    gridConnectionKw: row.grid_connection_kw ? parseFloat(row.grid_connection_kw) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     currentEpc: epcRow ? rowToEpcResponse(epcRow) : null,
@@ -255,6 +267,8 @@ export class BuildingProfileService {
       annualKwhCentral: Math.round(annualKwhCentral),
       annualKwhP75: Math.round(annualKwhP75),
     });
+
+    await runDataQualityCheck(siteId);
   }
 
   async updateClassification(
@@ -411,6 +425,91 @@ export class BuildingProfileService {
     }));
 
     return { count: sites.length, sites };
+  }
+
+  async applyFloorAreaOverride(
+    siteId: string,
+    floorAreaM2: number,
+    buildingType: BuildingType | undefined,
+    overrideSource: string,
+  ): Promise<BuildingProfileResponse | null> {
+    const existing = await pool.query<{ site_id: string }>(
+      'SELECT site_id FROM building_profiles WHERE site_id = $1',
+      [siteId],
+    );
+    if (existing.rows.length === 0) return null;
+
+    // Update floor area — write to both floor_area_m2 (used by calculate) and
+    // the new audit columns.  floor_area_override is also updated so the existing
+    // calculateAndStoreKwh logic (which prefers floor_area_override) picks it up.
+    await pool.query(
+      `UPDATE building_profiles SET
+         floor_area_m2              = $1,
+         floor_area_override        = $1,
+         floor_area_override_m2     = $1,
+         floor_area_confidence      = 'MANUAL_OVERRIDE',
+         floor_area_override_source = $2,
+         floor_area_override_at     = NOW(),
+         data_quality_flag          = NULL,
+         data_quality_note          = NULL,
+         data_quality_flagged_at    = NULL
+       WHERE site_id = $3`,
+      [floorAreaM2, overrideSource, siteId],
+    );
+
+    if (buildingType !== undefined) {
+      const phaseFactors = getPhaseFactors(buildingType);
+      const profileClass = mapBuildingTypeToProfileClass(buildingType);
+      await pool.query(
+        `UPDATE building_profiles SET
+           building_type          = $1,
+           building_type_override = $1,
+           elexon_profile_class   = $2,
+           cibse_category         = $1,
+           confidence_level       = 'MANUAL_OVERRIDE',
+           classified_by          = 'manual',
+           classified_at          = NOW(),
+           phase_l1_factor        = $3,
+           phase_l2_factor        = $4,
+           phase_l3_factor        = $5,
+           phase_factor_source    = 'building_type_default'
+         WHERE site_id = $6`,
+        [buildingType, profileClass, phaseFactors.l1, phaseFactors.l2, phaseFactors.l3, siteId],
+      );
+    }
+
+    logger.info(`Floor area override applied for ${siteId}`, {
+      siteId,
+      floorAreaM2,
+      buildingType,
+      overrideSource,
+    });
+
+    await this.calculateAndStoreKwh(siteId);
+    // Invalidate cached seasonal profile — floor area has changed
+    await invalidateSeasonalCache(siteId);
+    return this.getProfile(siteId);
+  }
+
+  async updateGridConnection(
+    siteId: string,
+    gridConnectionKw: number,
+  ): Promise<BuildingProfileResponse | null> {
+    const existing = await pool.query<{ site_id: string }>(
+      'SELECT site_id FROM building_profiles WHERE site_id = $1',
+      [siteId],
+    );
+    if (existing.rows.length === 0) return null;
+
+    await pool.query(
+      'UPDATE building_profiles SET grid_connection_kw = $1 WHERE site_id = $2',
+      [gridConnectionKw, siteId],
+    );
+
+    logger.info(`Grid connection updated for ${siteId}`, { siteId, gridConnectionKw });
+    // Invalidate cached seasonal profile — grid connection affects capacity headroom
+    await invalidateSeasonalCache(siteId);
+    return this.getProfile(siteId);
   }
 
   async getAllSiteIds(): Promise<string[]> {

@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../../db/client';
 import { buildingLoadService } from '../../services/building-load.service';
+import { getSeasonalProfile } from '../../services/seasonal-profile.service';
 import type { BuildingLoadEstimate, BuildingProfileRow } from '../../types/index';
 
 const router = Router();
@@ -34,6 +35,10 @@ function formatEstimateResponse(
       epcFetchedAt: profile.epc_fetched_at ? profile.epc_fetched_at.toISOString() : null,
       annualKwhSource: estimate.confidenceLevel,
       epcRating: profile.epc_rating ?? null,
+      floorAreaConfidence: profile.floor_area_confidence,
+      dataQualityFlag: profile.data_quality_flag ?? null,
+      dataQualityNote: profile.data_quality_note ?? null,
+      floorAreaOverrideSource: profile.floor_area_override_source ?? null,
     },
   };
 }
@@ -100,6 +105,54 @@ router.get(
       // Calculate fresh
       const estimate = await buildingLoadService.calculateEstimate(siteId, targetDate);
       res.json(formatEstimateResponse(estimate, profile));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// GET /estimate/:siteId/seasonal-profile — full seasonal charging availability profile
+router.get(
+  '/:siteId/seasonal-profile',
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const siteId = req.params['siteId']!;
+      const rawGrid = req.query['gridConnectionKw'];
+      const rawMargin = req.query['safetyMargin'];
+
+      let gridConnectionKw: number | undefined;
+      let safetyMargin: number | undefined;
+
+      if (rawGrid !== undefined) {
+        const parsed = Number(rawGrid);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+          res.status(422).json({
+            error: 'UNPROCESSABLE',
+            message: 'gridConnectionKw must be a positive number',
+            statusCode: 422,
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+        gridConnectionKw = parsed;
+      }
+
+      if (rawMargin !== undefined) {
+        const parsed = Number(rawMargin);
+        if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+          res.status(400).json({
+            error: 'VALIDATION_ERROR',
+            message: 'safetyMargin must be a number between 0 and 1',
+            statusCode: 400,
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+        safetyMargin = parsed;
+      }
+
+      const profile = await getSeasonalProfile(siteId, gridConnectionKw, safetyMargin);
+      res.json(profile);
     } catch (err) {
       next(err);
     }

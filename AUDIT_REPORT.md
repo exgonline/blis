@@ -1,13 +1,13 @@
 # BLIS Pipeline Audit Report
 
-**Date:** 2026-03-24
+**Date:** 2026-03-24 (updated 2026-03-25)
 **Scope:** End-to-end pipeline audit — Stage 1 (EPC fetch → kWh), Stage 2 (cron → estimates), Stage 3 (API response)
 
 ---
 
 ## Summary
 
-9 bugs found and fixed across 7 files. A new migration (`004`) adds the missing database columns. No new npm packages introduced. No existing migrations modified.
+9 bugs found and fixed across 7 files. A data integrity incident (site `gz-170159` under-estimated ~60×) was diagnosed and remediated via migration `005`. 5 data quality improvements were subsequently added (migrations `006`, new service, new endpoint, new test files). No new npm packages introduced. No existing migrations modified.
 
 ---
 
@@ -124,6 +124,166 @@
 ```
 
 Also added an explicit `SITE_NOT_FOUND` 404 before the estimate lookup, replacing the previous behaviour of relying on middleware to catch a thrown error.
+
+The `dataSource` block now also includes:
+```json
+"dataSource": {
+  "epcFetchedAt": "...",
+  "annualKwhSource": "MANUAL_OVERRIDE",
+  "epcRating": "C",
+  "floorAreaConfidence": "MANUAL_OVERRIDE",
+  "dataQualityFlag": null,
+  "dataQualityNote": null,
+  "floorAreaOverrideSource": "facilities team survey"
+}
+```
+
+---
+
+## Data Integrity Incident — Site gz-170159 (2026-03-25)
+
+**Root cause:** The EPC Non-domestic API returned a certificate for a small 83 m² section of the building (a retail unit within the hotel complex). The `main-activity` field did not contain a hotel keyword, so the classifier fell back to `unknown`. Combined effect: annual kWh was computed as ~12,325 instead of the correct ~1,015,740 — a 60× under-estimate.
+
+**Fix:** Migration `005_fix_gz170159_and_recalculate_kwh.sql` applied directly to production:
+- Set `building_type_override = 'hotel'`, `floor_area_override = 3420 m²`, `elexon_profile_class = 1`, `confidence_level = 'MANUAL_OVERRIDE'`, corrected phase factors.
+- Recalculated `annual_kwh_*` for all sites with floor area via a single UPDATE…FROM JOIN.
+
+**Post-fix values:** gz-170159: 1,015,740 kWh central | bovey_castle_hotel: 107,217 | bovey_castle: 53,608.50
+
+---
+
+## Data Quality Improvements (2026-03-25)
+
+### CHANGE 1 — Schema: floor area confidence + data quality flags
+
+**File:** `migrations/006_data_quality_fields.sql`
+
+New columns on `building_profiles`:
+- `floor_area_confidence VARCHAR(20)` — `EPC_DERIVED` | `MANUAL_OVERRIDE` | `SUSPECT` | `CONFIRMED`
+- `floor_area_override_m2 NUMERIC(10,2)` — audit copy of the override value
+- `floor_area_override_source VARCHAR(200)` — who/what provided the override
+- `floor_area_override_at TIMESTAMPTZ` — when the override was applied
+- `data_quality_flag VARCHAR(50)` — e.g. `BELOW_MINIMUM_THRESHOLD`
+- `data_quality_note TEXT` — human-readable explanation
+- `data_quality_flagged_at TIMESTAMPTZ`
+
+Migration also backfills `MANUAL_OVERRIDE` for all sites that already have `floor_area_override` set, and runs an initial quality sweep flagging any site whose `annual_kwh_central` is below the minimum plausible threshold for its building type.
+
+### CHANGE 2 — Automatic data quality check after kWh calculation
+
+**Files:** `src/services/data-quality.service.ts`, `src/services/building-profile.service.ts`
+
+`calculateAndStoreKwh` now calls `runDataQualityCheck(siteId)` after persisting kWh values. The check compares `annual_kwh_central` against per-building-type minimum thresholds (e.g. 50,000 kWh for hotels). Suspect sites are flagged with `BELOW_MINIMUM_THRESHOLD`; sites with `MANUAL_OVERRIDE` floor area have any stale flags cleared automatically.
+
+Minimum thresholds: hotel/hotel_budget: 50,000 | housing_association: 20,000 | fleet_depot: 15,000 | office_general/retail/pub_restaurant: 25,000 | car_park/warehouse/unknown: 5,000.
+
+### CHANGE 3 — PATCH /v1/profile/:siteId/floor-area
+
+**File:** `src/api/routes/profile.routes.ts`
+
+New endpoint allowing operators to supply a corrected floor area (and optionally a corrected building type). Updates `floor_area_m2`, `floor_area_override`, `floor_area_override_m2`, `floor_area_confidence = 'MANUAL_OVERRIDE'`, and `floor_area_override_source`. Triggers a background `calculateEstimate` call so the load curve reflects the corrected area immediately.
+
+### CHANGE 4 — Data quality fields in estimate response
+
+**File:** `src/api/routes/estimate.routes.ts`
+
+The `dataSource` block now includes `floorAreaConfidence`, `dataQualityFlag`, `dataQualityNote`, and `floorAreaOverrideSource` so API consumers can detect suspect floor area estimates without a separate profile call.
+
+### CHANGE 5 — Backfill quality check in migration
+
+**File:** `migrations/006_data_quality_fields.sql`
+
+The migration runs the threshold check as a SQL UPDATE so that all existing production sites are evaluated on deployment — the same logic applied by the TypeScript service at runtime.
+
+---
+
+## Tests Added (2026-03-25)
+
+- `tests/data-quality.service.test.ts` — unit tests for `getKwhThreshold`, `isBelowThreshold`, `buildQualityNote` (pure functions, no DB)
+- `tests/floor-area-override.test.ts` — schema validation tests for `floorAreaOverrideSchema` covering boundary values and all `BuildingType` enum members
+
+---
+
+## Seasonal Profile Endpoint (2026-03-25)
+
+### Feature Summary
+
+New endpoint `GET /v1/estimate/:siteId/seasonal-profile` returns a complete 576-period charging availability profile for a site (4 seasons × 3 day types × 48 half-hour periods), plus a summary block with best/worst charging windows, annual usable kWh totals, and a flexibility asset estimate.
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `migrations/007_grid_connection.sql` | Adds `grid_connection_kw` to `building_profiles`; creates `seasonal_profile_cache` table |
+| `src/services/seasonal-profile.service.ts` | Calculation engine, cache logic, cache invalidation |
+| `tests/seasonal-profile.service.test.ts` | Unit tests for pure calculation functions and cache key |
+| `tests/api/seasonal-profile.routes.test.ts` | Route integration tests (14 tests, 0 DB calls) |
+
+### Modified Files
+
+| File | Change |
+|------|--------|
+| `src/types/index.ts` | Added `grid_connection_kw` to `BuildingProfileRow` and `BuildingProfileResponse`; added 7 new interfaces for the seasonal profile response shape |
+| `src/services/building-profile.service.ts` | Added `updateGridConnection` method; added `invalidateSeasonalCache` call in `applyFloorAreaOverride` |
+| `src/api/routes/profile.routes.ts` | Added `PATCH /:siteId/grid-connection` |
+| `src/api/routes/estimate.routes.ts` | Added `GET /:siteId/seasonal-profile` |
+
+### Calculation Logic
+
+For each of the 576 combinations (season × day type × hhIndex):
+
+1. `estimatedBuildingKw = (annualKwhP75 × elexonCoefficient / 0.5) × (1 + safetyMargin)`
+2. `availableChargingKw = max(0, gridConnectionKw × 0.8 − estimatedBuildingKw)`
+3. `usableChargingKwh = availableChargingKw × 0.5 × 0.92`
+4. `flexibilityDispatchableKw = availableChargingKw × 0.65`
+
+Elexon coefficients are loaded in a single bulk query (576 rows) rather than 576 individual lookups.
+
+### Summary Calculations
+
+- **bestChargingWindow / worstChargingWindow**: 4-period (2-hour) sliding window over the per-hhIndex mean `availableChargingKw` across all 12 season/day-type combinations.
+- **totalAnnualUsableChargingKwh**: Weighted sum using seasonal day counts (winter: 151, spring: 61, summer: 92, high_summer: 61) and day-type frequencies (weekday: 261, Saturday: 52, Sunday: 52).
+- **flexibilityAssetMw**: Average `flexibilityDispatchableKw` during winter weekday 16:00–20:00 (hhIndex 32–39) divided by 1000.
+
+### Cache Strategy
+
+Results are cached in `seasonal_profile_cache` keyed by MD5 of `(siteId, gridConnectionKw, safetyMargin, annualKwhP75, elexonProfileClass)`. Cache TTL is 24 hours. The cache row for a site is deleted (invalidated) whenever:
+- `PATCH /:siteId/floor-area` is called (floor area or building type changed → kWh changed → profile changes)
+- `PATCH /:siteId/grid-connection` is called (headroom calculation changes)
+
+The `cachedAt` field in the response is `null` for fresh calculations and an ISO 8601 timestamp for cached responses.
+
+### Query Parameters
+
+| Parameter | Type | Default | Validation |
+|-----------|------|---------|------------|
+| `gridConnectionKw` | number | stored value or 100 kW | positive, max 10,000; 422 if invalid |
+| `safetyMargin` | number | 0.15 | 0–1 range; 400 if out of range |
+
+### Grid Connection Column
+
+`building_profiles.grid_connection_kw` is nullable. Sites where this is NULL use the 100 kW default. **These sites should be reviewed and have their actual grid connection capacity entered via `PATCH /v1/profile/:siteId/grid-connection`.**
+
+Current production state (as of migration 007 deployment):
+
+| Site | grid_connection_kw |
+|------|--------------------|
+| gz-170159 | NULL — **review required** |
+| bovey_castle_hotel | NULL — **review required** |
+| bovey_castle | NULL — **review required** |
+| test_site_001 | NULL — **review required** |
+
+All four active sites are using the 100 kW default. Seasonal profile estimates for these sites should be treated as indicative until the actual grid connection capacity is recorded.
+
+### Error Responses
+
+| Condition | Status | Code |
+|-----------|--------|------|
+| Site not found | 404 | `NOT_FOUND` |
+| `annual_kwh_p75` not yet calculated | 422 | `UNPROCESSABLE` |
+| Elexon data missing for profile class | 500 | `ELEXON_MISSING` |
+| `gridConnectionKw` ≤ 0 | 422 | `UNPROCESSABLE` |
+| `safetyMargin` outside 0–1 | 400 | `VALIDATION_ERROR` |
 
 ---
 

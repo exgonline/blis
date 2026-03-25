@@ -2,7 +2,9 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.middleware';
 import { buildingProfileService } from '../../services/building-profile.service';
+import { buildingLoadService } from '../../services/building-load.service';
 import { BuildingType, BuildingAge } from '../../types/index';
+import { logger } from '../../utils/logger';
 
 const router = Router();
 
@@ -92,6 +94,86 @@ router.get(
         return;
       }
       res.json(epc);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PATCH /profile/:siteId/floor-area — apply a manual floor area override
+const floorAreaOverrideSchema = z.object({
+  floorAreaM2: z.number().positive().max(500000),
+  buildingType: z.nativeEnum(BuildingType).optional(),
+  overrideSource: z.string().min(1).max(200),
+  notes: z.string().max(500).optional(),
+});
+
+router.patch(
+  '/:siteId/floor-area',
+  validate(floorAreaOverrideSchema, 'body'),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const siteId = req.params['siteId']!;
+      const body = req.body as z.infer<typeof floorAreaOverrideSchema>;
+
+      const profile = await buildingProfileService.applyFloorAreaOverride(
+        siteId,
+        body.floorAreaM2,
+        body.buildingType,
+        body.overrideSource,
+      );
+
+      if (!profile) {
+        res.status(404).json({
+          error: 'NOT_FOUND',
+          message: `Site ${siteId} not found`,
+          statusCode: 404,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // Trigger a fresh load estimate with the corrected floor area
+      buildingLoadService.calculateEstimate(siteId).catch((err: unknown) => {
+        logger.warn('Post-override estimate recalculation failed', {
+          siteId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
+      res.json(profile);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// PATCH /profile/:siteId/grid-connection — store the site's grid connection capacity
+const gridConnectionSchema = z.object({
+  gridConnectionKw: z.number().positive().max(10000),
+});
+
+router.patch(
+  '/:siteId/grid-connection',
+  validate(gridConnectionSchema, 'body'),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const siteId = req.params['siteId']!;
+      const body = req.body as z.infer<typeof gridConnectionSchema>;
+
+      const profile = await buildingProfileService.updateGridConnection(siteId, body.gridConnectionKw);
+
+      if (!profile) {
+        res.status(404).json({
+          error: 'NOT_FOUND',
+          message: `Site ${siteId} not found`,
+          statusCode: 404,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
+      res.json(profile);
     } catch (err) {
       next(err);
     }

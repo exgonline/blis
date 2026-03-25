@@ -102,6 +102,16 @@ export interface BuildingProfileRow {
   annual_kwh_high: string | null;
   epc_rating: string | null;
   epc_fetched_at: Date | null;
+  // Data quality fields — added by migration 006
+  floor_area_confidence: string;
+  floor_area_override_m2: string | null;
+  floor_area_override_source: string | null;
+  floor_area_override_at: Date | null;
+  data_quality_flag: string | null;
+  data_quality_note: string | null;
+  data_quality_flagged_at: Date | null;
+  // Grid connection — added by migration 007
+  grid_connection_kw: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -213,9 +223,26 @@ export interface BuildingProfileResponse {
   phaseL3Factor: number;
   phaseFactorSource: string;
   confidenceLevel: string;
+  annualKwhCentral: number | null;
+  annualKwhP75: number | null;
+  annualKwhLow: number | null;
+  annualKwhHigh: number | null;
+  floorAreaConfidence: string;
+  dataQualityFlag: string | null;
+  dataQualityNote: string | null;
+  floorAreaOverrideSource: string | null;
+  floorAreaOverrideAt: Date | null;
+  gridConnectionKw: number | null;
   createdAt: Date;
   updatedAt: Date;
   currentEpc: EpcRecordResponse | null;
+}
+
+export interface FloorAreaOverrideRequest {
+  floorAreaM2: number;
+  buildingType?: BuildingType;
+  overrideSource: string;
+  notes?: string;
 }
 
 export interface EpcRecordResponse {
@@ -395,4 +422,56 @@ export interface ElexonDayTypeData {
   weekday: number[];
   saturday: number[];
   sunday: number[];
+}
+
+// ─── Seasonal Profile Types ────────────────────────────────────────────────────
+
+export type ProfileSeason = 'winter' | 'spring' | 'summer' | 'high_summer';
+export type ProfileDayType = 'weekday' | 'saturday' | 'sunday';
+
+export interface SeasonalHalfHourPeriod {
+  hhIndex: number;
+  timeStart: string;
+  elexonCoefficient: number;
+  estimatedBuildingKw: number;
+  availableChargingKw: number;
+  usableChargingKwh: number;
+  flexibilityDispatchableKw: number;
+}
+
+export interface SeasonalDayTypeProfile {
+  halfHourlyProfile: SeasonalHalfHourPeriod[];
+}
+
+export interface SeasonProfile {
+  weekday: SeasonalDayTypeProfile;
+  saturday: SeasonalDayTypeProfile;
+  sunday: SeasonalDayTypeProfile;
+}
+
+export interface ChargingWindow {
+  startHhIndex: number;
+  endHhIndex: number;
+  startTime: string;
+  endTime: string;
+  averageAvailableChargingKw: number;
+}
+
+export interface SeasonalProfileSummary {
+  bestChargingWindow: ChargingWindow;
+  worstChargingWindow: ChargingWindow;
+  totalAnnualUsableChargingKwh: number;
+  averageDailyUsableChargingKwh: number;
+  flexibilityAssetMw: number;
+}
+
+export interface SeasonalProfileResponse {
+  siteId: string;
+  cachedAt: string | null;
+  generatedInMs: number;
+  gridConnectionKw: number;
+  safetyMargin: number;
+  annualKwhP75: number;
+  seasons: Record<ProfileSeason, SeasonProfile>;
+  summary: SeasonalProfileSummary;
 }
