@@ -78,11 +78,15 @@ export class BuildingLoadService {
 
     // Annual kWh — prefer value cached in building_profiles (written by Stage 1 EPC pipeline).
     // Fall back to inline calculation when the profile hasn't been through Stage 1 yet.
+    // NOTE: Use > 0 check, not just truthy — PostgreSQL returns DECIMALs as strings like '0.00'
+    // which is truthy but would produce zero kW output for every calculation.
     let annualKwhCentral: number;
     let annualKwhP75: number;
-    if (profile.annual_kwh_central && profile.annual_kwh_p75) {
-      annualKwhCentral = parseFloat(profile.annual_kwh_central);
-      annualKwhP75 = parseFloat(profile.annual_kwh_p75);
+    const storedCentral = profile.annual_kwh_central ? Number.parseFloat(profile.annual_kwh_central) : 0;
+    const storedP75 = profile.annual_kwh_p75 ? Number.parseFloat(profile.annual_kwh_p75) : 0;
+    if (storedCentral > 0 && storedP75 > 0) {
+      annualKwhCentral = storedCentral;
+      annualKwhP75 = storedP75;
     } else {
       const benchmark = await cibseService.getBenchmark(effectiveBuildingType);
       const typicalKwhPerM2 = parseFloat(benchmark.typical_kwh);
